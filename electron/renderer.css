@@ -72,10 +72,28 @@ button:active {
   padding: 12px;
 }
 
-.provider h2 {
+.provider .header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
   margin: 0 0 10px;
+}
+
+.provider h2 {
+  margin: 0;
   font-size: 15px;
   font-weight: 650;
+}
+
+.stale {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bar.empty {
+  opacity: 0.4;
 }
 
 .row {

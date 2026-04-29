@@ -2,10 +2,15 @@
 
 Small local usage tracker for Claude Code and Codex.
 
-It reads local files only:
+It surfaces the **server-reported** rate-limit percentages (the same numbers
+each provider's CLI sees), not local token estimates. Each box shows how long
+ago the snapshot was observed so you can tell when it's gone stale.
 
-- Claude Code: `~/.claude/projects/**/*.jsonl`
-- Codex: `~/.codex/state_5.sqlite` and `~/.codex/sessions/**/*.jsonl`
+Sources (read-only):
+
+- Claude Code: the `rate_limits` JSON the statusline hook pipes in on stdin,
+  cached locally between runs.
+- Codex: the latest `rate_limits` event in `~/.codex/sessions/**/*.jsonl`.
 
 Run:
 
@@ -22,11 +27,12 @@ node bin/ai-usage.js set codex 86 98
 `npm run app` opens the minimal Electron desktop window. It polls the same local
 tracker data every 5 seconds and has a manual refresh button.
 
-For estimated "left" percentages based on local token usage, set caps in
-`usage.config.json`. Codex can also show the live rate-limit percentages that
-the local Codex rollout logs include when they are present. `set` writes a local
-calibration snapshot using left percentages; newer live provider data wins when
-it is available.
+`set` writes a manual override (left-percent for session and weekly) into the
+local state cache — useful for filling in a number until the next live snapshot
+arrives. Newer live data wins over older overrides.
+
+To get fresh Claude numbers, point your statusline at this CLI — Claude Code
+pipes its `rate_limits` payload over stdin every render, and the CLI caches it.
 
 Claude statusline example:
 

@@ -6,6 +6,7 @@ refreshEl.addEventListener("click", () => refresh());
 
 refresh();
 setInterval(refresh, 5000);
+window.aiUsage.onChanged?.(() => refresh());
 
 async function refresh() {
   try {
@@ -28,12 +29,22 @@ function renderProvider(provider) {
   const card = document.createElement("article");
   card.className = `provider ${provider.id}`;
 
+  const header = document.createElement("div");
+  header.className = "header";
+
   const title = document.createElement("h2");
   title.textContent = provider.label;
-  card.append(title);
+  header.append(title);
 
-  card.append(renderRow("Session", provider.rateLimits?.session || provider.session));
-  card.append(renderRow("Weekly", provider.rateLimits?.weekly || provider.weekly));
+  const stale = document.createElement("span");
+  stale.className = "stale";
+  stale.textContent = formatStaleness(provider.rateLimits?.observedAt);
+  header.append(stale);
+
+  card.append(header);
+
+  card.append(renderRow("Session", provider.rateLimits?.session));
+  card.append(renderRow("Weekly", provider.rateLimits?.weekly));
 
   return card;
 }
@@ -52,10 +63,14 @@ function renderRow(label, source) {
 
   const barEl = document.createElement("div");
   barEl.className = "bar";
-  const fillEl = document.createElement("div");
-  fillEl.className = "fill";
-  fillEl.style.width = `${clamp(source?.usedPercent || 0, 0, 100)}%`;
-  barEl.append(fillEl);
+  if (source?.usedPercent != null) {
+    const fillEl = document.createElement("div");
+    fillEl.className = "fill";
+    fillEl.style.width = `${clamp(source.usedPercent, 0, 100)}%`;
+    barEl.append(fillEl);
+  } else {
+    barEl.classList.add("empty");
+  }
 
   const resetEl = document.createElement("div");
   resetEl.className = "reset";
@@ -66,9 +81,24 @@ function renderRow(label, source) {
 }
 
 function formatLeft(source) {
-  if (!source || source.leftPercent == null) return "100% left";
+  if (!source || source.leftPercent == null) return "no data";
   const value = Number(source.leftPercent);
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)}% left`;
+}
+
+function formatStaleness(iso) {
+  if (!iso) return "no data";
+  const observed = new Date(iso).getTime();
+  if (Number.isNaN(observed)) return "no data";
+  const diffMs = Date.now() - observed;
+  if (diffMs < 60000) return "just now";
+
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }
 
 function formatReset(iso) {

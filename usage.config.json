@@ -1,18 +1,12 @@
 {
-  "sessionWindowHours": 5,
-  "weekStartsOn": "monday",
   "providers": {
     "claude": {
       "enabled": true,
-      "home": "~/.claude",
-      "sessionTokenCap": 0,
-      "weeklyTokenCap": 0
+      "home": "~/.claude"
     },
     "codex": {
       "enabled": true,
-      "home": "~/.codex",
-      "sessionTokenCap": 0,
-      "weeklyTokenCap": 0
+      "home": "~/.codex"
     }
   }
 }

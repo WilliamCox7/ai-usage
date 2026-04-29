@@ -4,10 +4,13 @@ Guidance for coding agents working in this repo.
 
 ## Project
 
-`ai-usage` is a small local CLI that reports Claude Code and Codex usage. It reads only local files:
+`ai-usage` is a small local CLI that reports Claude Code and Codex usage. It
+displays only the server-reported `rate_limits` percentages — no local token
+estimation. Sources:
 
-- Claude Code: `~/.claude/projects/**/*.jsonl`
-- Codex: `~/.codex/state_5.sqlite` and `~/.codex/sessions/**/*.jsonl`
+- Claude Code: the `rate_limits` JSON piped over stdin by the statusline hook,
+  cached in the local state file between runs.
+- Codex: the latest `rate_limits` event in `~/.codex/sessions/**/*.jsonl`.
 
 Single entry point: `bin/ai-usage.js` (Node >=20, ESM, no runtime deps).
 
@@ -26,8 +29,10 @@ node bin/ai-usage.js paths
 ## Layout
 
 - `bin/ai-usage.js` — entire CLI (commands, parsing, readers, formatting).
-- `usage.config.json` — user-editable caps and provider toggles.
-- `.ai-usage-state.json` — runtime cache for live rate limits and `set` overrides. Do not commit.
+- `usage.config.json` — provider toggles and `~`-relative home paths.
+- State cache (`~/Library/Application Support/ai-usage/state.json` on macOS,
+  `~/.config/ai-usage/state.json` elsewhere) — runtime cache for the latest
+  Claude statusline snapshot and `set` overrides.
 - `display.md` — sample rendered output.
 
 ## Conventions
@@ -35,7 +40,7 @@ node bin/ai-usage.js paths
 - No dependencies. Keep it that way unless asked.
 - Pure ESM, Node built-ins only.
 - Reads must be tolerant of partial writes (sessions are live) — wrap JSON parsing in try/catch and skip on failure.
-- Live provider rate limits beat local token estimates; `set` overrides win only if newer than the live snapshot.
+- Server-reported `rate_limits` are the only displayed signal. Don't reintroduce token-cap estimation. `set` overrides win only if newer than the live snapshot.
 - Don't widen scope: this tool is read-only against user data and writes only to its own config/state files.
 
 ## Testing

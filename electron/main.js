@@ -1,16 +1,24 @@
 import electron from "electron";
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage } = electron;
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const STATE_PATH = process.platform === "darwin"
+  ? path.join(os.homedir(), "Library", "Application Support", "ai-usage", "state.json")
+  : path.join(os.homedir(), ".config", "ai-usage", "state.json");
+const CODEX_SESSIONS_DIR = path.join(os.homedir(), ".codex", "sessions");
 
 let mainWindow;
 let codexTray;
 let claudeTray;
 let trayMenu;
 let trayUpdateTimer;
+const watchers = [];
+let changeDebounceTimer = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -118,6 +126,36 @@ function readUsage() {
 
 ipcMain.handle("usage:read", async () => readUsage());
 
+function notifyChanged() {
+  if (changeDebounceTimer) return;
+  changeDebounceTimer = setTimeout(() => {
+    changeDebounceTimer = null;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("usage:changed");
+    }
+    updateTrayTitle();
+  }, 250);
+}
+
+function watchPath(target, options) {
+  if (!fs.existsSync(target)) return;
+  try {
+    const watcher = fs.watch(target, options, () => notifyChanged());
+    watcher.on("error", () => {});
+    watchers.push(watcher);
+  } catch {
+    // Recursive watch can fail on some filesystems — fall back silently.
+  }
+}
+
+function startWatchers() {
+  const stateDir = path.dirname(STATE_PATH);
+  if (fs.existsSync(stateDir)) {
+    watchPath(stateDir, { persistent: false });
+  }
+  watchPath(CODEX_SESSIONS_DIR, { persistent: false, recursive: true });
+}
+
 app.whenReady().then(() => {
   if (process.platform === "darwin") {
     app.dock?.hide();
@@ -127,6 +165,7 @@ app.whenReady().then(() => {
   }
   createWindow();
   createTray();
+  startWatchers();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -143,6 +182,10 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   if (trayUpdateTimer) clearInterval(trayUpdateTimer);
+  for (const watcher of watchers) {
+    try { watcher.close(); } catch {}
+  }
+  watchers.length = 0;
 });
 
 async function updateTrayTitle() {
@@ -167,7 +210,7 @@ function setTrayTitle(tray, title) {
 }
 
 function formatProviderLeft(provider) {
-  const source = provider?.rateLimits?.session || provider?.session;
-  if (!source || source.leftPercent == null) return "100%";
+  const source = provider?.rateLimits?.session;
+  if (!source || source.leftPercent == null) return "—";
   return `${Math.round(Number(source.leftPercent))}%`;
 }

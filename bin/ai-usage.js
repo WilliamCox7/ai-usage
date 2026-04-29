@@ -3,7 +3,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -13,29 +12,18 @@ const STATE_DIR = process.platform === "darwin"
   : path.join(os.homedir(), ".config", "ai-usage");
 const STATE_PATH = path.join(STATE_DIR, "state.json");
 const DEFAULT_CONFIG = {
-  sessionWindowHours: 5,
-  weekStartsOn: "monday",
   providers: {
-    claude: {
-      enabled: true,
-      home: "~/.claude",
-      sessionTokenCap: 0,
-      weeklyTokenCap: 0,
-    },
-    codex: {
-      enabled: true,
-      home: "~/.codex",
-      sessionTokenCap: 0,
-      weeklyTokenCap: 0,
-    },
+    claude: { enabled: true, home: "~/.claude" },
+    codex: { enabled: true, home: "~/.codex" },
   },
 };
 const COLORS = {
   reset: "\x1b[0m",
   claude: "\x1b[38;5;208m",
   codex: "\x1b[34m",
+  dim: "\x1b[2m",
 };
-const BOX_WIDTH = 69;
+const BOX_WIDTH = 72;
 const BAR_WIDTH = 25;
 const INNER_WIDTH = BOX_WIDTH - 2;
 
@@ -136,6 +124,7 @@ function loadRuntimeContext() {
         ...claudeRateLimits,
       }),
     };
+    delete next._rawClaudeStatusline;
     try {
       fs.mkdirSync(STATE_DIR, { recursive: true });
       fs.writeFileSync(STATE_PATH, `${JSON.stringify(next, null, 2)}\n`);
@@ -223,7 +212,9 @@ function parseClaudeRateLimits(input) {
   const session = normalizeClaudeLimit(
     limits.five_hour || limits.session || limits.primary,
   );
-  const weekly = normalizeClaudeLimit(limits.weekly || limits.secondary);
+  const weekly = normalizeClaudeLimit(
+    limits.seven_day || limits.weekly || limits.secondary,
+  );
   if (!session && !weekly) return null;
 
   return { session, weekly };
@@ -315,11 +306,30 @@ function printStatusline(config, options, runtime) {
   const report = buildReport(config, runtime);
   const providers = filterProviders(report, options.provider).providers;
   const parts = providers.map((provider) => {
-    const session = preferredPercent(provider, "session");
-    const weekly = preferredPercent(provider, "weekly");
-    return `${provider.label} S:${formatLeft(session)} W:${formatLeft(weekly)}`;
+    const session = provider.rateLimits?.session;
+    const weekly = provider.rateLimits?.weekly;
+    const sessionBar = statuslineBar(provider.id, session);
+    const weeklyBar = statuslineBar(provider.id, weekly);
+    return `S ${sessionBar} ${formatLeft(session)}   W ${weeklyBar} ${formatLeft(weekly)}`;
   });
-  console.log(parts.join(" | "));
+  console.log(parts.join(" │ "));
+}
+
+function statuslineBar(providerId, limit) {
+  const width = 20;
+  if (!limit || limit.usedPercent == null) {
+    return `[${"-".repeat(width)}]`;
+  }
+
+  const used = clamp(limit.usedPercent, 0, 100);
+  const filled = Math.round((used / 100) * width);
+  const filledChars = "=".repeat(filled);
+  const emptyChars = "-".repeat(width - filled);
+  const color = COLORS[providerId];
+  if (!color || process.env.NO_COLOR) {
+    return `[${filledChars}${emptyChars}]`;
+  }
+  return `[${color}${filledChars}${COLORS.reset}${emptyChars}]`;
 }
 
 function watch(config, options) {
@@ -356,34 +366,18 @@ function printPaths(config) {
 
 function buildReport(config, runtime) {
   const now = new Date();
-  const sessionStart = new Date(
-    now.getTime() - config.sessionWindowHours * 60 * 60 * 1000,
-  );
-  const weekStart = startOfWeek(now, config.weekStartsOn);
-
   const providers = [];
   if (config.providers.codex.enabled) {
-    providers.push(readCodex(config.providers.codex, sessionStart, weekStart));
+    providers.push(readCodex(config.providers.codex));
   }
   if (config.providers.claude.enabled) {
-    providers.push(
-      readClaude(
-        config.providers.claude,
-        sessionStart,
-        weekStart,
-        runtime?.claudeRateLimits,
-      ),
-    );
+    providers.push(readClaude(runtime?.claudeRateLimits));
   }
 
   applyOverrides(providers, runtime?.overrides);
 
   return {
     generatedAt: now.toISOString(),
-    windows: {
-      sessionStart: sessionStart.toISOString(),
-      weekStart: weekStart.toISOString(),
-    },
     providers,
   };
 }
@@ -467,87 +461,28 @@ function filterProviders(report, providerName) {
   };
 }
 
-function readClaude(config, sessionStart, weekStart, liveRateLimits) {
-  const home = expandHome(config.home);
-  const files = listFiles(path.join(home, "projects"), ".jsonl", weekStart);
-  const usage = emptyUsage("claude", "Claude");
-
-  for (const file of files) {
-    readJsonLines(file, (event) => {
-      const timestamp = parseTimestamp(event.timestamp);
-      if (!timestamp || timestamp < weekStart) return;
-
-      const tokens = claudeTokens(event);
-      const type = event.type || event.message?.role || "event";
-      const sessionId =
-        event.sessionId || event.session_id || event.sessionID || file;
-      addEvent(usage.weekly, timestamp, tokens, type, sessionId);
-      if (timestamp >= sessionStart) {
-        addEvent(usage.session, timestamp, tokens, type, sessionId);
-      }
-    });
-  }
-
-  applyCaps(usage, config);
-  if (liveRateLimits) {
-    usage.rateLimits = liveRateLimits;
-  }
-  return usage;
+function readClaude(liveRateLimits) {
+  return {
+    id: "claude",
+    label: "Claude",
+    rateLimits: liveRateLimits || null,
+  };
 }
 
-function readCodex(config, sessionStart, weekStart) {
+function readCodex(config) {
   const home = expandHome(config.home);
-  const usage = emptyUsage("codex", "Codex");
-
-  for (const thread of readCodexThreads(path.join(home, "state_5.sqlite"))) {
-    const updatedAt = new Date(thread.updatedAt * 1000);
-    if (updatedAt < weekStart) continue;
-
-    addEvent(usage.weekly, updatedAt, thread.tokensUsed, "thread", thread.id);
-    if (updatedAt >= sessionStart) {
-      addEvent(
-        usage.session,
-        updatedAt,
-        thread.tokensUsed,
-        "thread",
-        thread.id,
-      );
-    }
-  }
-
-  usage.rateLimits = readCodexRateLimits(path.join(home, "sessions"));
-  applyCaps(usage, config);
-  return usage;
-}
-
-function readCodexThreads(dbPath) {
-  if (!fs.existsSync(dbPath)) return [];
-
-  try {
-    const output = execFileSync(
-      "sqlite3",
-      [
-        "-json",
-        dbPath,
-        "select id, updated_at as updatedAt, tokens_used as tokensUsed from threads where tokens_used > 0",
-      ],
-      { encoding: "utf8" },
-    );
-    return JSON.parse(output || "[]").map((row) => ({
-      id: String(row.id),
-      updatedAt: Number(row.updatedAt || 0),
-      tokensUsed: Number(row.tokensUsed || 0),
-    }));
-  } catch {
-    return [];
-  }
+  return {
+    id: "codex",
+    label: "Codex",
+    rateLimits: readCodexRateLimits(path.join(home, "sessions")),
+  };
 }
 
 function readCodexRateLimits(sessionsDir) {
   const files = listFiles(
     sessionsDir,
     ".jsonl",
-    new Date(Date.now() - 24 * 60 * 60 * 1000),
+    new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
   );
   let latest = null;
 
@@ -585,111 +520,34 @@ function normalizeCodexLimit(limit) {
   };
 }
 
-function emptyUsage(id, label) {
-  return {
-    id,
-    label,
-    session: emptyWindow(),
-    weekly: emptyWindow(),
-    rateLimits: null,
-  };
-}
-
-function emptyWindow() {
-  return {
-    tokens: 0,
-    events: 0,
-    userTurns: 0,
-    assistantTurns: 0,
-    sessions: 0,
-    lastSeenAt: null,
-    cap: 0,
-    usedPercent: null,
-    leftPercent: null,
-  };
-}
-
-function addEvent(bucket, timestamp, tokens, type, sessionId) {
-  bucket.tokens += tokens;
-  bucket.events += 1;
-  if (type === "user") bucket.userTurns += 1;
-  if (type === "assistant") bucket.assistantTurns += 1;
-  bucket._sessions ||= new Set();
-  bucket._sessions.add(sessionId);
-  if (!bucket.lastSeenAt || timestamp > new Date(bucket.lastSeenAt)) {
-    bucket.lastSeenAt = timestamp.toISOString();
-  }
-}
-
-function applyCaps(usage, config) {
-  finishWindow(usage.session, Number(config.sessionTokenCap || 0));
-  finishWindow(usage.weekly, Number(config.weeklyTokenCap || 0));
-}
-
-function finishWindow(bucket, cap) {
-  bucket.cap = cap;
-  bucket.sessions = bucket._sessions ? bucket._sessions.size : 0;
-  delete bucket._sessions;
-
-  if (cap > 0) {
-    bucket.usedPercent = clamp((bucket.tokens / cap) * 100, 0, 999);
-    bucket.leftPercent = clamp(100 - bucket.usedPercent, 0, 100);
-  }
-}
-
-function claudeTokens(event) {
-  const usage = event.message?.usage;
-  if (!usage) return 0;
-
-  return [
-    usage.input_tokens,
-    usage.output_tokens,
-    usage.cache_creation_input_tokens,
-    usage.cache_read_input_tokens,
-  ].reduce((sum, value) => sum + Number(value || 0), 0);
-}
-
 function printProvider(provider) {
   const rows = [
-    buildDisplayRow(
-      "Session",
-      provider.session,
-      provider.rateLimits?.session || null,
-    ),
-    buildDisplayRow(
-      "Weekly",
-      provider.weekly,
-      provider.rateLimits?.weekly || null,
-    ),
+    buildDisplayRow("Session", provider.rateLimits?.session),
+    buildDisplayRow("Weekly", provider.rateLimits?.weekly),
   ];
 
   console.log(formatBox(provider, rows));
 }
 
-function buildDisplayRow(label, bucket, liveLimit) {
-  const percent = liveLimit || bucket;
+function buildDisplayRow(label, limit) {
   return {
     label,
-    left: formatLeftOrActivity(percent, bucket),
-    progress: progressBar(percent?.usedPercent),
-    reset: liveLimit?.resetsAt
-      ? `resets ${formatRelativeReset(liveLimit.resetsAt)}`
+    left: limit?.leftPercent != null
+      ? `${formatNumber(limit.leftPercent)}% left`
+      : "no data",
+    progress: progressBar(limit?.usedPercent),
+    reset: limit?.resetsAt
+      ? `resets ${formatRelativeReset(limit.resetsAt)}`
       : "",
+    hasData: limit?.leftPercent != null,
   };
 }
 
-function formatLeftOrActivity(percent, bucket) {
-  if (percent?.leftPercent != null) {
-    return `${formatNumber(percent.leftPercent)}% left`;
-  }
-
-  return "100% left";
-}
-
 function formatBox(provider, rows) {
-  const title = ` ${provider.label} `;
+  const stale = formatStaleness(provider.rateLimits?.observedAt);
+  const title = stale ? ` ${provider.label} ${COLORS.dim}${stale}${COLORS.reset} ` : ` ${provider.label} `;
   const topRightWidth = BOX_WIDTH - visibleLength(title) - 1;
-  const top = `╭─${title}${"─".repeat(topRightWidth)}╮`;
+  const top = `╭─${title}${"─".repeat(Math.max(0, topRightWidth))}╮`;
   const body = rows.map((row) => formatBoxRow(provider.id, row)).join("\n");
   const bottom = `╰${"─".repeat(BOX_WIDTH)}╯`;
   return `${top}\n${body}\n${bottom}`;
@@ -697,7 +555,7 @@ function formatBox(provider, rows) {
 
 function formatBoxRow(providerId, row) {
   const left = `${row.label.padEnd(7)}  ${row.left.padEnd(9)}  `;
-  const bar = colorizeProgress(providerId, row.progress);
+  const bar = row.hasData ? colorizeProgress(providerId, row.progress) : row.progress;
   const right = `  ${row.reset}`;
   const plain = `${left}${row.progress}${right}`;
   const padding = Math.max(0, INNER_WIDTH - visibleLength(plain));
@@ -727,26 +585,31 @@ function colorizeProgress(providerId, bar) {
   return `${open}${color}${filled}${COLORS.reset}${empty}${close}`;
 }
 
-function preferredPercent(provider, windowName) {
-  return provider.rateLimits?.[windowName] || provider[windowName];
-}
-
-function formatLeft(source) {
-  if (!source || source.leftPercent == null) return "100% left";
-  return `${formatNumber(source.leftPercent)}% left`;
+function formatLeft(limit) {
+  if (!limit || limit.leftPercent == null) return "—";
+  return `${formatNumber(limit.leftPercent)}%`;
 }
 
 function formatNumber(value) {
   return Number(value).toFixed(value >= 10 ? 0 : 1);
 }
 
-function formatTime(iso) {
-  return new Date(iso).toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+function formatStaleness(iso) {
+  if (!iso) return "no data";
+  const observed = new Date(iso).getTime();
+  if (Number.isNaN(observed)) return "no data";
+  const diffMs = Date.now() - observed;
+  if (diffMs < 0) return "just now";
+
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }
 
 function formatRelativeReset(iso) {
@@ -772,15 +635,6 @@ function formatRelativeReset(iso) {
 
 function visibleLength(value) {
   return value.replace(/\x1b\[[0-9;]*m/g, "").length;
-}
-
-function startOfWeek(date, weekStartsOn) {
-  const output = new Date(date);
-  output.setHours(0, 0, 0, 0);
-  const desired = weekStartsOn.toLowerCase() === "sunday" ? 0 : 1;
-  const diff = (output.getDay() - desired + 7) % 7;
-  output.setDate(output.getDate() - diff);
-  return output;
 }
 
 function parseTimestamp(value) {
