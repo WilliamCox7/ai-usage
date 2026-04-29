@@ -97,7 +97,6 @@ function readUsage() {
       process.execPath,
       [path.join(ROOT, "bin", "ai-usage.js"), "now", "--json"],
       {
-        cwd: ROOT,
         maxBuffer: 1024 * 1024,
         env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
       },

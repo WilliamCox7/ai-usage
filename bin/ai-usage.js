@@ -8,7 +8,10 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_PATH = path.join(ROOT, "usage.config.json");
-const STATE_PATH = path.join(ROOT, ".ai-usage-state.json");
+const STATE_DIR = process.platform === "darwin"
+  ? path.join(os.homedir(), "Library", "Application Support", "ai-usage")
+  : path.join(os.homedir(), ".config", "ai-usage");
+const STATE_PATH = path.join(STATE_DIR, "state.json");
 const DEFAULT_CONFIG = {
   sessionWindowHours: 5,
   weekStartsOn: "monday",
@@ -134,6 +137,7 @@ function loadRuntimeContext() {
       }),
     };
     try {
+      fs.mkdirSync(STATE_DIR, { recursive: true });
       fs.writeFileSync(STATE_PATH, `${JSON.stringify(next, null, 2)}\n`);
     } catch {
       // The tracker still works without cache writes.
@@ -177,6 +181,7 @@ function setProviderLimits(args) {
     weekly: percentFromLeft(weekly),
   };
 
+  fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.writeFileSync(STATE_PATH, `${JSON.stringify(state, null, 2)}\n`);
   console.log(
     `${provider}: session ${formatNumber(session)}% left, weekly ${formatNumber(weekly)}% left`,
