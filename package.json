@@ -1,0 +1,37 @@
+{
+  "name": "ai-usage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ai-usage": "./bin/ai-usage.js"
+  },
+  "main": "electron/main.js",
+  "scripts": {
+    "check": "node --check bin/ai-usage.js",
+    "now": "node bin/ai-usage.js now",
+    "app": "electron .",
+    "dist": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^37.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "build": {
+    "appId": "com.will.ai-usage",
+    "productName": "AI Usage",
+    "files": [
+      "bin/**",
+      "electron/**",
+      "usage.config.json",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": "dir"
+    }
+  }
+}
